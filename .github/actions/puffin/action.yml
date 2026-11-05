@@ -19,9 +19,6 @@ outputs:
   path:
     description: Path to the puffin binary
     value: ${{ steps.paths.outputs.binary }}
-  chromium-version:
-    description: Chromium version puffin was built from
-    value: ${{ steps.version.outputs.version }}
 
 runs:
   using: composite
@@ -34,8 +31,6 @@ runs:
         GH_TOKEN: ${{ github.token }}
       run: |
         if [ -z "$VERSION" ]; then
-          # the highest version, not the newest release: releases arrive out
-          # of order, and -rN tags re-run a version that's already out
           VERSION=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/$TARBALLS_REPOSITORY/releases?per_page=50" |
             jq -r '[.[] | select(.draft | not) | .tag_name | capture("^chromium-(?<v>[0-9]+(\\.[0-9]+){3})$").v]
@@ -43,6 +38,7 @@ runs:
         fi
         [ -n "$VERSION" ] && [ "$VERSION" != null ] || { echo "::error::no chromium-tarballs release found"; exit 1; }
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        echo "milestone=${VERSION%%.*}" >> "$GITHUB_OUTPUT"
 
     - id: paths
       shell: bash
@@ -54,8 +50,7 @@ runs:
       uses: actions/cache/restore@v5
       with:
         path: ${{ steps.paths.outputs.dir }}
-        # bump the leading number when build.sh changes what it builds
-        key: puffin-1-${{ steps.version.outputs.version }}-${{ runner.os }}-${{ runner.arch }}
+        key: puffin-1-${{ steps.version.outputs.milestone }}-${{ runner.os }}-${{ runner.arch }}
 
     - if: steps.cache.outputs.cache-hit != 'true'
       shell: bash
