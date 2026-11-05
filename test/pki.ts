@@ -69,6 +69,22 @@ export function makeIntermediate(dir: string, name: string, parent: Ca, serial: 
     ],
     dir,
   );
+  issueCa(dir, parent, serial);
+
+  return load(dir);
+}
+
+// Another CA certificate for `subject`'s key, signed by `parent`: a cross-sign.
+export function crossSign(dir: string, subject: Ca, name: string, parent: Ca, serial: string): Ca {
+  mkdirSync(dir, { recursive: true });
+  openssl(["req", "-new", "-key", subject.key, "-out", "ca.csr", "-subj", `/CN=${name}`], dir);
+  issueCa(dir, parent, serial);
+
+  return { ...load(dir), key: subject.key };
+}
+
+// Signs <dir>/ca.csr as a CA certificate, into <dir>/ca.pem.
+function issueCa(dir: string, parent: Ca, serial: string) {
   writeFileSync(
     join(dir, "ext.cnf"),
     "basicConstraints=critical,CA:true\nkeyUsage=critical,keyCertSign,cRLSign\n",
@@ -94,8 +110,6 @@ export function makeIntermediate(dir: string, name: string, parent: Ca, serial: 
     ],
     dir,
   );
-
-  return load(dir);
 }
 
 function load(dir: string): Ca {

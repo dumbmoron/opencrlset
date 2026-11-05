@@ -62,13 +62,20 @@ export interface IssuerEntry {
 }
 
 // A key every tier blocks (BlockedSPKIs) because a CA certificate for it was
-// revoked for one of POLICY.blockKeyReasons: the first such revocation
+// revoked for one of POLICY.blockKeyReasons, and no CCADB certificate still
+// vouches for it: the first such revocation
 export interface BlockedKey {
   spkiSha256: string;
   // the revoking issuer's key, and the revoked certificate's serial there
   issuer: string;
   serial: string;
   reason: number;
+}
+
+// A key revoked like a BlockedKey, but not blocked: other CCADB certificates
+// still vouch for it, by fingerprint
+export interface ContestedKey extends BlockedKey {
+  vouching: string[];
 }
 
 export interface CrlSourceInfo {
@@ -171,6 +178,7 @@ export interface ExplorerMeta {
   };
   tiers: Record<Tier, { parents: number; serials: number; bytes: number; sha256: string }>;
   blockedKeys: BlockedKey[];
+  contestedKeys: ContestedKey[];
   google?: Omit<GoogleComparison, "perIssuer" | "unknownIssuers">;
   shardHexDigits: number;
   flags: typeof FLAG;

@@ -9,7 +9,7 @@ import { encodeCrlSet, parseCrlSet } from "../src/crlset.ts";
 import type { CrlSource } from "../src/snapshot.ts";
 import { FLAG, shardOf } from "../src/explorer.ts";
 import { parseCertificate, sha256Hex } from "../src/x509.ts";
-import { makeCrl, makeIntermediate, makeRoot, type Ca } from "./pki.ts";
+import { crossSign, makeCrl, makeIntermediate, makeRoot, type Ca } from "./pki.ts";
 
 const work = mkdtempSync(join(tmpdir(), "opencrlset-build-"));
 const snapshotDir = join(work, "snapshot");
@@ -45,6 +45,26 @@ const mozillaSub = makeIntermediate(
 );
 
 const stranger = makeRoot(join(work, "stranger"), "Chrome Root");
+// also cross-signed by the Mozilla-only root, which hasn't revoked it: the
+// root revoking its own certificate for this key can't block it
+const crossed = makeIntermediate(join(work, "crossed"), "Cross-signed CA", root, "1004");
+const crossedByMozilla = crossSign(
+  join(work, "crossed-mozilla"),
+  crossed,
+  "Cross-signed CA",
+  mozillaRoot,
+  "2002",
+);
+// a root no store trusts any more, and its revoked cross-sign from the Chrome
+// root: nothing vouches for its key, so every tier blocks it
+const distrusted = makeRoot(join(work, "distrusted"), "Distrusted Root");
+const distrustedByRoot = crossSign(
+  join(work, "distrusted-root"),
+  distrusted,
+  "Distrusted Root",
+  root,
+  "1005",
+);
 
 const spki = (ca: Ca) => parseCertificate(ca.der).spkiSha256;
 const b64 = (hex: string) => Buffer.from(hex, "hex").toString("base64");
@@ -56,6 +76,8 @@ const crls = new Map<string, Buffer>([
     makeCrl(root, [
       // a leaked CA key: every tier blocks the key, not just this certificate
       { serial: "1001", reason: "CACompromise" },
+      { serial: "1004", reason: "keyCompromise" },
+      { serial: "1005", reason: "keyCompromise" },
       // a sub-CA CCADB doesn't know about; roots only issue CA certificates
       { serial: "0C", reason: "superseded" },
       // CA certificates on hold are only suspended
@@ -161,13 +183,32 @@ writeFileSync(
       mozilla: "Trusted",
       full: ["http://crl.test/mozilla.crl"],
     }),
+    record(crossed, "Cross-signed CA", { parent: root, chrome: "Not Trusted" }),
+    record(crossedByMozilla, "Cross-signed CA", {
+      parent: mozillaRoot,
+      chrome: "Not Trusted",
+      mozilla: "Trusted",
+    }),
+    record(distrusted, "Distrusted Root", { chrome: "Removed" }),
+    record(distrustedByRoot, "Distrusted Root", { parent: root, chrome: "Not Trusted" }),
   ]),
 );
 
 writeFileSync(
   join(snapshotDir, "ccadb", "pems.csv"),
   csv(
-    [root, revokedIntermediate, ccadbRevoked, sub, mozillaRoot, mozillaSub].map((ca) => ({
+    [
+      root,
+      revokedIntermediate,
+      ccadbRevoked,
+      sub,
+      mozillaRoot,
+      mozillaSub,
+      crossed,
+      crossedByMozilla,
+      distrusted,
+      distrustedByRoot,
+    ].map((ca) => ({
       "SHA-256 Fingerprint": fingerprint(ca),
       "X.509 Certificate (PEM)": readFileSync(ca.pem, "utf8"),
     })),
@@ -240,22 +281,38 @@ test("builds tiers, dataset and reports from a snapshot", async () => {
   const standard = tier("standard");
   assert.equal(standard.header.Sequence, Math.floor(Date.parse("2026-10-20T12:00:00Z") / 60000));
   assert.deepEqual(Object.fromEntries(standard.parents), {
-    [spki(root)]: ["0c", "1001", "1002"],
+    [spki(root)]: ["0c", "1001", "1002", "1004", "1005"],
     [spki(sub)]: ["01", "aa"],
     [spki(revokedIntermediate)]: ["0b"],
   });
   assert.deepEqual([...standard.parents.keys()], [...standard.parents.keys()].sort());
 
   for (const name of ["standard", "priority", "all"]) {
-    assert.deepEqual(tier(name).header.BlockedSPKIs, [b64(spki(revokedIntermediate))]);
+    assert.deepEqual(
+      tier(name).header.BlockedSPKIs,
+      [b64(spki(revokedIntermediate)), b64(spki(distrusted))].sort(),
+    );
   }
 
-  assert.deepEqual(report.blockedKeys, [
-    { spkiSha256: spki(revokedIntermediate), issuer: spki(root), serial: "1001", reason: 2 },
+  assert.deepEqual(
+    report.blockedKeys,
+    [
+      { spkiSha256: spki(revokedIntermediate), issuer: spki(root), serial: "1001", reason: 2 },
+      { spkiSha256: spki(distrusted), issuer: spki(root), serial: "1005", reason: 1 },
+    ].sort((a, b) => (a.spkiSha256 < b.spkiSha256 ? -1 : 1)),
+  );
+  assert.deepEqual(report.contestedKeys, [
+    {
+      spkiSha256: spki(crossed),
+      issuer: spki(root),
+      serial: "1004",
+      reason: 1,
+      vouching: [fingerprint(crossedByMozilla)],
+    },
   ]);
   assert.deepEqual(tier("priority").parents.get(spki(sub)), ["01", "02", "aa"]);
   assert.deepEqual(tier("all").parents.get(spki(sub)), ["01", "02", "03", "aa"]);
-  assert.deepEqual(tier("all").parents.get(spki(root)), ["0c", "1001", "1002"]);
+  assert.deepEqual(tier("all").parents.get(spki(root)), ["0c", "1001", "1002", "1004", "1005"]);
   assert.equal(tier("all").parents.has(spki(mozillaSub)), false);
 
   const manifest = JSON.parse(
@@ -356,7 +413,7 @@ test("builds tiers, dataset and reports from a snapshot", async () => {
   const rootFile = JSON.parse(explorer(`issuers/${spki(root)}.json`));
   assert.deepEqual(
     rootFile.caCertificates.map((c: { serial: string }) => c.serial),
-    ["1001", "1002", "1003"],
+    ["1001", "1002", "1003", "1004", "1005"],
   );
   assert.equal(rootFile.failedCrls.length, 2);
 });
@@ -386,8 +443,8 @@ test("explains what changed since a previous build", async () => {
       ],
       name,
     );
-    // aa under sub, 0b, 0c, 1001, 1002 are new; 01 was there before
-    assert.equal(changes.added, 5);
+    // aa under sub, 0b, 0c, 1001, 1002, 1004, 1005 are new; 01 was there before
+    assert.equal(changes.added, 7);
   }
 });
 

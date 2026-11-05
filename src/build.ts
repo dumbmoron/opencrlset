@@ -18,6 +18,7 @@ import {
   nameHash,
   subjectKeyId,
   type BlockedKey,
+  type ContestedKey,
   type CrlSourceInfo,
   type ExplorerMeta,
   type GoogleComparison,
@@ -231,7 +232,9 @@ export async function build(snapshotDir: string, outDir: string, options: BuildO
   await mkdir(outDir, { recursive: true });
   const overrides = await loadOverrides(options.overrides);
   // keys of CA certificates revoked for POLICY.blockKeyReasons, with the first such revocation
-  const blockedKeys = new Map<string, BlockedKey>();
+  const blockCandidates = new Map<string, BlockedKey>();
+  // CA certificates their issuer's CRLs revoke, as "<issuer key>/<serial>"
+  const revokedCaCertificates = new Set<string>();
 
   const google = options.google ? parseCrlSet(await readFile(options.google)) : undefined;
   const comparison = google ? new Comparison(google) : undefined;
@@ -362,12 +365,19 @@ export async function build(snapshotDir: string, outDir: string, options: BuildO
 
       if (
         caRecord &&
+        (revocation.reason === null || !POLICY.excludedReasons.includes(revocation.reason))
+      ) {
+        revokedCaCertificates.add(`${spki}/${serial}`);
+      }
+
+      if (
+        caRecord &&
         revocation.reason !== null &&
         POLICY.blockKeyReasons.includes(revocation.reason)
       ) {
         const key = caRecord.certificate.spkiSha256;
         // the first such revocation is the one reported
-        blockedKeys.getOrInsert(key, {
+        blockCandidates.getOrInsert(key, {
           spkiSha256: key,
           issuer: spki,
           serial,
@@ -521,6 +531,33 @@ export async function build(snapshotDir: string, outDir: string, options: BuildO
     });
   }
 
+  // A CA's revocation only blocks a key no CCADB certificate still vouches
+  // for: an unrevoked intermediate, or a root some store trusts. Otherwise
+  // it's reported as contested, so one CA can't block a key others stand
+  // behind.
+  const blockedKeys = new Map<string, BlockedKey>();
+  const contestedKeys: ContestedKey[] = [];
+
+  const isRevoked = (record: CertifiedRecord) => {
+    if (record.revocationStatus === "Revoked" || record.revocationStatus === "Parent Cert Revoked")
+      return true;
+
+    const parent = record.parent ? ccadb.records.get(record.parent)?.certificate : undefined;
+    const serial = canonicalSerial(record.certificate.serial).toString("hex");
+
+    return parent !== undefined && revokedCaCertificates.has(`${parent.spkiSha256}/${serial}`);
+  };
+
+  for (const [key, candidate] of [...blockCandidates].sort(([a], [b]) => byKey(a, b))) {
+    const vouching = (issuers.get(key)?.records ?? [])
+      .filter((r) => (r.type === "root" ? r.trustedBy.length > 0 : !isRevoked(r)))
+      .map((r) => r.fingerprint)
+      .sort();
+
+    if (vouching.length) contestedKeys.push({ ...candidate, vouching });
+    else blockedKeys.set(key, candidate);
+  }
+
   // official entries under keys we have no data for at all
   for (const spki of [...googleSets.keys()].sort(byKey)) {
     if (processed.has(spki)) continue;
@@ -615,7 +652,8 @@ export async function build(snapshotDir: string, outDir: string, options: BuildO
       LimitedSubjects: overrides.LimitedSubjects.length,
     },
     tiers: tierReports,
-    blockedKeys: [...blockedKeys.values()].sort((a, b) => byKey(a.spkiSha256, b.spkiSha256)),
+    blockedKeys: [...blockedKeys.values()],
+    contestedKeys,
     google: comparison?.finish(issuers, blockedKeys),
     // the standard tier against the previous build's
     changes: previous ? { previous: previous.header.Sequence, added, removed } : undefined,

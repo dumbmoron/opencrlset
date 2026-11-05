@@ -39,7 +39,10 @@ certificate.
   dropped. The dataset keeps them.
 - **Compromised CA keys:** a disclosed CA certificate revoked for
   keyCompromise or cACompromise puts its key in `BlockedSPKIs`, listed
-  under `blockedKeys` in `report.json`.
+  under `blockedKeys` in `report.json`, unless another CCADB certificate
+  still vouches for the key: an unrevoked one, or a root some store
+  trusts. Then one CA can't block a key others stand behind, and the key
+  is listed under `contestedKeys` instead.
 
 ## Overrides
 
