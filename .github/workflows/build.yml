@@ -83,6 +83,7 @@ jobs:
           printf '%s\n' "$CRX_SIGNING_KEY" > "$key"
           args=()
           if [ -n "$PUFFIN" ]; then
+            mkdir -p previous-crx
             # patch from the last day's builds; ones without CRXs are skipped
             for sequence in $(curl -fsSL "${R2_PUBLIC_URL%/}/history.json" | jq -r '.[-4:][].sequence' || true); do
               for tier in standard priority all; do
