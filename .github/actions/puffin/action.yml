@@ -1,0 +1,67 @@
+name: puffin
+description: >-
+  Builds Chromium's puffin (third_party/puffin), the tool that makes the
+  patches Chromium's component updater applies, from a chromium-tarballs
+  release, by default the newest. Cached by Chromium version.
+
+inputs:
+  chromium-version:
+    description: Chromium version to build from, a chromium-tarballs release; empty for the newest
+    default: ""
+  tarballs-url:
+    description: Where chromium-tarballs archives are hosted
+    default: https://tarballs.imput.net
+  tarballs-repository:
+    description: GitHub repository whose releases carry the archives' SHA256SUMS
+    default: imputnet/chromium-tarballs
+
+outputs:
+  path:
+    description: Path to the puffin binary
+    value: ${{ steps.paths.outputs.binary }}
+  chromium-version:
+    description: Chromium version puffin was built from
+    value: ${{ steps.version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - id: version
+      shell: bash
+      env:
+        VERSION: ${{ inputs.chromium-version }}
+        TARBALLS_REPOSITORY: ${{ inputs.tarballs-repository }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ -z "$VERSION" ]; then
+          # the highest version, not the newest release: releases arrive out
+          # of order, and -rN tags re-run a version that's already out
+          VERSION=$(curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/$TARBALLS_REPOSITORY/releases?per_page=50" |
+            jq -r '[.[] | select(.draft | not) | .tag_name | capture("^chromium-(?<v>[0-9]+(\\.[0-9]+){3})$").v]
+              | max_by(split(".") | map(tonumber))')
+        fi
+        [ -n "$VERSION" ] && [ "$VERSION" != null ] || { echo "::error::no chromium-tarballs release found"; exit 1; }
+        echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+    - id: paths
+      shell: bash
+      run: |
+        echo "dir=$RUNNER_TEMP/puffin" >> "$GITHUB_OUTPUT"
+        echo "binary=$RUNNER_TEMP/puffin/puffin" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@v5
+      with:
+        path: ${{ steps.paths.outputs.dir }}
+        # bump the leading number when build.sh changes what it builds
+        key: puffin-1-${{ steps.version.outputs.version }}-${{ runner.os }}-${{ runner.arch }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ steps.version.outputs.version }}
+        TARBALLS_URL: ${{ inputs.tarballs-url }}
+        TARBALLS_REPOSITORY: ${{ inputs.tarballs-repository }}
+        OUT: ${{ steps.paths.outputs.dir }}
+      run: bash "$GITHUB_ACTION_PATH/build.sh"

@@ -1,0 +1,92 @@
+/* Plain tables and text on Prism's tokens. */
+
+:root {
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --good: #18794e;
+  --bad: #c2362b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --good: #5fd39a;
+    --bad: #ff8a7d;
+  }
+}
+
+main {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+main h1 {
+  font-size: 24px;
+}
+
+main h2 {
+  font-size: 17px;
+  margin-top: 16px;
+}
+
+p,
+a,
+li,
+td,
+th {
+  font-size: 14px;
+}
+
+a {
+  color: var(--helium-blue);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.muted {
+  color: var(--tertiary);
+}
+
+.error {
+  color: var(--bad);
+}
+
+.table {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--helium-elevated-10);
+}
+
+th {
+  color: var(--tertiary);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+td {
+  color: var(--primary);
+}
+
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

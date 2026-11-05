@@ -1,0 +1,5 @@
+node_modules/
+/snapshot/
+/out/
+/google/
+*.tar.zst

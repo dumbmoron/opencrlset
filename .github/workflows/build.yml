@@ -1,0 +1,148 @@
+name: build crlsets
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: opencrlset
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_ENDPOINT_URL: ${{ vars.R2_ENDPOINT_URL }}
+      R2_PUBLIC_URL: ${{ vars.R2_PUBLIC_URL }}
+      # secrets can't be tested in `if:`, so expose only whether it's set
+      HAS_CRX_KEY: ${{ secrets.CRX_SIGNING_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v7
+      # version from package.json's packageManager
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          # the newest 26.x, for security fixes; report.json records the exact
+          # version (snapshotTool.node) for rebuilds
+          node-version-file: .node-version
+          check-latest: true
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm fmt:check
+      - run: pnpm test
+      - run: pnpm site check
+      - run: pnpm site build
+
+      - name: snapshot ccadb and crls
+        run: node src/cli.ts snapshot snapshot
+
+      - name: fetch the official crlset
+        continue-on-error: true
+        run: node src/cli.ts fetch-google google
+
+      - name: fetch the previous build's standard crlset
+        if: env.R2_PUBLIC_URL != ''
+        continue-on-error: true
+        run: curl -fsSL -o previous-crl-set "${R2_PUBLIC_URL%/}/latest/crlset/standard/crl-set"
+
+      - name: build
+        run: |
+          args=()
+          if [ -f google/crl-set ]; then args+=(--google google/crl-set); fi
+          if [ -f previous-crl-set ]; then args+=(--previous previous-crl-set); fi
+          node src/cli.ts build snapshot out "${args[@]}"
+          if [ -f google/crl-set ]; then
+            mkdir -p out/google
+            cp google/crl-set google/source.json out/google/
+          fi
+
+      # patches between CRXs are optional: without puffin, browsers get full downloads
+      - name: build puffin
+        id: puffin
+        if: env.HAS_CRX_KEY == 'true' && env.R2_PUBLIC_URL != ''
+        continue-on-error: true
+        uses: ./.github/actions/puffin
+
+      - name: package crx
+        if: env.HAS_CRX_KEY == 'true'
+        env:
+          CRX_SIGNING_KEY: ${{ secrets.CRX_SIGNING_KEY }}
+          PUFFIN: ${{ steps.puffin.outcome == 'success' && steps.puffin.outputs.path || '' }}
+        run: |
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$CRX_SIGNING_KEY" > "$key"
+          args=()
+          if [ -n "$PUFFIN" ]; then
+            # patch from the last day's builds; ones without CRXs are skipped
+            for sequence in $(curl -fsSL "${R2_PUBLIC_URL%/}/history.json" | jq -r '.[-4:][].sequence' || true); do
+              for tier in standard priority all; do
+                curl -fsSL --create-dirs -o "previous-crx/$sequence/$tier.crx3" \
+                  "${R2_PUBLIC_URL%/}/builds/$sequence/crx/$tier.crx3" || rm -f "previous-crx/$sequence/$tier.crx3"
+              done
+            done
+            args+=(--puffin "$PUFFIN" --previous-crx previous-crx)
+          fi
+          node src/cli.ts crx out out/crx --key "$key" "${args[@]}"
+
+      - name: archive snapshot
+        run: |
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -C snapshot -cf - . | zstd -19 -T0 -q -o out/snapshot.tar.zst
+
+      - name: sanity check against the previous build
+        if: env.R2_PUBLIC_URL != ''
+        run: node src/cli.ts gate out/report.json "${R2_PUBLIC_URL%/}/latest/report.json"
+
+      - name: checksums
+        run: |
+          node src/cli.ts checksums out
+          node src/cli.ts index out > latest.json
+          node src/cli.ts history out/report.json "${R2_PUBLIC_URL%/}/history.json" > history.json
+
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: out/SHA256SUMS
+
+      - name: publish
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_RETRY_MODE: standard
+          AWS_MAX_ATTEMPTS: "5"
+        run: |
+          if [ -z "$R2_BUCKET" ] || [ -z "$R2_ENDPOINT_URL" ]; then
+            echo "::error::missing r2 configuration"
+            exit 1
+          fi
+          s3() { aws s3 "$@" --endpoint-url "$R2_ENDPOINT_URL" --no-progress --only-show-errors; }
+          sequence=$(jq -r .sequence out/report.json)
+          # immutable build first (explorer/ is derived and only kept for
+          # latest), then the moving "latest" copies, the site, index last
+          s3 cp out/ "s3://$R2_BUCKET/builds/$sequence/" --recursive --exclude 'explorer/*' \
+            --cache-control 'public, max-age=31536000, immutable'
+          s3 sync out/ "s3://$R2_BUCKET/latest/" --delete --exclude snapshot.tar.zst --cache-control max-age=300
+          s3 sync site/build/_app/ "s3://$R2_BUCKET/_app/" --cache-control 'public, max-age=31536000, immutable'
+          s3 sync site/build/ "s3://$R2_BUCKET/" --exclude '_app/*' --exclude 'builds/*' --exclude 'latest/*' --cache-control max-age=300
+          s3 cp history.json "s3://$R2_BUCKET/history.json" --cache-control max-age=300
+          s3 cp latest.json "s3://$R2_BUCKET/latest.json" --cache-control max-age=300
+          {
+            echo "### CRLSet $sequence"
+            echo
+            echo '```json'
+            jq '{sequence, snapshotTime, crls, tiers, google: (.google // {} | del(.perIssuer, .unknownIssuers))}' out/report.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

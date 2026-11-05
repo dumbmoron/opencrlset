@@ -1,0 +1,52 @@
+name: create crx signing key
+
+# One shot: makes the RSA key CI signs CRXs with, stores it as the
+# CRX_SIGNING_KEY secret, and shows only its public details. Refuses to
+# replace an existing key, since browsers pin its hash.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  key:
+    runs-on: ubuntu-24.04
+    env:
+      # secrets can't be tested in `if:`, so expose only whether it's set
+      HAS_CRX_KEY: ${{ secrets.CRX_SIGNING_KEY != '' }}
+    steps:
+      - name: refuse to replace an existing key
+        if: env.HAS_CRX_KEY == 'true'
+        run: |
+          echo "::error::CRX_SIGNING_KEY already exists; delete it first to replace it"
+          exit 1
+
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          check-latest: true
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: generate and store the key
+        env:
+          # GITHUB_TOKEN can't write secrets: a fine-grained token with
+          # "Secrets: read and write" on this repository
+          GH_TOKEN: ${{ secrets.SECRETS_TOKEN }}
+        run: |
+          umask 077
+          key="$RUNNER_TEMP/crx-key.pem"
+          trap 'rm -f "$key"' EXIT
+          openssl genrsa -out "$key" 2048 2>/dev/null
+          gh secret set CRX_SIGNING_KEY --repo "$GITHUB_REPOSITORY" < "$key"
+          {
+            echo "### CRX signing key"
+            echo
+            echo '```'
+            node src/cli.ts crx-id "$key"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
