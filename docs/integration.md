@@ -13,6 +13,17 @@ which is Google's. To ship opencrlset:
 2. Point the component updater at an update server for that component.
 3. Sign the server's responses, or turn CUP off (below).
 
+opencrlset's key, which signs the CRXs it publishes, has component ID
+`eaeohkhnmcodmcdcajaholebpdodfncf`:
+
+```cpp
+const uint8_t kCrlSetPublicKeySHA256[32] = {
+    0x40, 0x4e, 0x7a, 0x7d, 0xc2, 0xe3, 0xc2, 0x32, 0x09, 0x07, 0xeb,
+    0x41, 0xf3, 0xe3, 0x5d, 0x25, 0xf7, 0x95, 0xa0, 0x28, 0xa0, 0x76,
+    0xff, 0xf8, 0x4d, 0x54, 0xf7, 0x31, 0x01, 0x8a, 0xbf, 0x68,
+};
+```
+
 **CRXs.** opencrlset publishes signed ones in `builds/<sequence>/crx/`.
 To sign with your own key instead:
 
