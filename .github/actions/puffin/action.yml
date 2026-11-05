@@ -51,7 +51,7 @@ runs:
         echo "binary=$RUNNER_TEMP/puffin/puffin" >> "$GITHUB_OUTPUT"
 
     - id: cache
-      uses: actions/cache@v5
+      uses: actions/cache/restore@v5
       with:
         path: ${{ steps.paths.outputs.dir }}
         # bump the leading number when build.sh changes what it builds
@@ -65,3 +65,9 @@ runs:
         TARBALLS_REPOSITORY: ${{ inputs.tarballs-repository }}
         OUT: ${{ steps.paths.outputs.dir }}
       run: bash "$GITHUB_ACTION_PATH/build.sh"
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ steps.paths.outputs.dir }}
+        key: ${{ steps.cache.outputs.cache-primary-key }}

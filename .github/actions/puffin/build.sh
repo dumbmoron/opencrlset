@@ -23,8 +23,7 @@ pick_volume() {
 
 volume=$(pick_volume)
 if [ "$(free_gib "$volume")" -lt "$NEEDED_GIB" ] && [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
-  # what chromium-tarballs' setup_runner.py removes, except the tool cache,
-  # which holds what setup-* actions installed for the rest of the job
+  # not the tool cache: it holds what setup-* actions installed for this job
   for path in /usr/local/lib/android /usr/share/dotnet /usr/local/swift /usr/share/swift \
     /usr/local/.ghcup /opt/ghc /usr/local/share/boost /opt/az /opt/microsoft; do
     sudo rm -rf -- "$path"

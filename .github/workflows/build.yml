@@ -32,8 +32,6 @@ jobs:
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
-          # the newest 26.x, for security fixes; report.json records the exact
-          # version (snapshotTool.node) for rebuilds
           node-version-file: .node-version
           check-latest: true
           cache: pnpm
@@ -68,7 +66,6 @@ jobs:
             cp google/crl-set google/source.json out/google/
           fi
 
-      # patches between CRXs are optional: without puffin, browsers get full downloads
       - name: build puffin
         id: puffin
         if: env.HAS_CRX_KEY == 'true' && env.R2_PUBLIC_URL != ''
